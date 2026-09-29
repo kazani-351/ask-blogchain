@@ -8,7 +8,7 @@ BM25 is the classic search-engine ranking formula. A chunk scores high when it:
 Its blind spot is the reason embeddings exist: it only matches exact words.
 "wearable tracker" will never match a chunk that says "ring".
 
-Run: python3 search.py "your question"
+Run: python3 search.py [bm25|vector|hybrid] "your question"
 """
 import json
 import math
@@ -55,12 +55,61 @@ class BM25:
         return [{**self.chunks[i], "score": round(s, 3)} for s, i in scored[:k] if s > 0]
 
 
-def load():
-    return BM25(json.loads(CHUNKS_FILE.read_text()))
+class Vector:
+    """Meaning search: cosine similarity between the question and every chunk.
+
+    With 76 chunks, checking every one is instant. This is exactly what FAISS's
+    IndexFlatIP does; a vector database only matters at millions of chunks.
+    """
+
+    def __init__(self, chunks):
+        import numpy as np
+        meta_file = Path("data/embeddings.json")
+        ids = json.loads(meta_file.read_text())["ids"] if meta_file.exists() else None
+        if ids != [c["id"] for c in chunks]:
+            raise SystemExit("Embeddings missing or stale for these chunks. Run: .venv/bin/python embed.py")
+        self.np, self.chunks = np, chunks
+        self.vecs = np.load("data/embeddings.npy")
+
+    def search(self, query, k=5):
+        import llm
+        q = self.np.array(llm.embed([query])[0], dtype=self.np.float32)
+        sims = self.vecs @ (q / self.np.linalg.norm(q))
+        top = self.np.argsort(-sims)[:k]
+        return [{**self.chunks[i], "score": round(float(sims[i]), 3)} for i in top]
+
+
+class Hybrid:
+    """Run both, merge with reciprocal rank fusion (RRF).
+
+    RRF ignores the raw scores (BM25 and cosine aren't comparable) and uses rank
+    only: each list gives a chunk 1/(60 + rank). Chunks both methods like win.
+    """
+
+    def __init__(self, chunks):
+        self.parts = [BM25(chunks), Vector(chunks)]
+
+    def search(self, query, k=5):
+        fused, by_id = {}, {}
+        for part in self.parts:
+            for rank, hit in enumerate(part.search(query, 20), 1):
+                fused[hit["id"]] = fused.get(hit["id"], 0) + 1 / (60 + rank)
+                by_id[hit["id"]] = hit
+        top = sorted(fused, key=fused.get, reverse=True)[:k]
+        return [{**by_id[i], "score": round(fused[i], 4)} for i in top]
+
+
+RETRIEVERS = {"bm25": BM25, "vector": Vector, "hybrid": Hybrid}
+
+
+def load(kind="bm25"):
+    return RETRIEVERS[kind](json.loads(CHUNKS_FILE.read_text()))
 
 
 def main():
-    for hit in load().search(" ".join(sys.argv[1:]) or "trading bot leaderboard"):
+    args = sys.argv[1:]
+    kind = args.pop(0) if args and args[0] in RETRIEVERS else "bm25"
+    for hit in load(kind).search(" ".join(args) or "trading bot leaderboard"):
         print(f"{hit['score']:7.3f}  {hit['id']}\n         {hit['text'][:120]}...")
 
 

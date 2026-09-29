@@ -27,4 +27,26 @@ Keyword search is perfect when you use the author's words and drops sharply when
 
 **Chunk size sweep (hit@5 / MRR, all questions):** 150 words: 88% / 0.83 · **300: 96% / 0.86** · 500: 92% / 0.86 · 1000: 96% / 0.80. Small chunks lose context. Large chunks mix topics, so the right post ranks lower.
 
+## Stage 1b: embeddings, hybrid search, cited answers
+
+```
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+echo "MESH_API_KEY=..." > .env          # Mesh API, OpenAI-compatible gateway
+.venv/bin/python embed.py               # 76 chunks -> 1536-dim vectors (text-embedding-3-small)
+.venv/bin/python evaluate.py hybrid     # bm25 | vector | hybrid
+.venv/bin/python ask.py "Where did my trading bot finish?"
+```
+
+Vector search is plain numpy cosine similarity, the same exact search as FAISS `IndexFlatIP`. At 76 chunks a vector database adds nothing. Hybrid merges BM25 and vector rankings with reciprocal rank fusion.
+
+| retriever | hit@1 keyword | hit@1 paraphrase | hit@1 all | hit@5 all | MRR |
+|---|---|---|---|---|---|
+| BM25 | 100% | 64% | 79% | 96% | 0.86 |
+| vector | 90% | 79% | 83% | 92% | 0.86 |
+| **hybrid** | **100%** | **79%** | **88%** | 92% | **0.89** |
+
+Vectors fix paraphrase at the top rank (64% to 79%) but lose some exact-word matches, like "USDC on Chelsea's shirts". Hybrid keeps both strengths and has the best first-rank accuracy. With 24 questions, one question is about 4 points, so treat small gaps as noise.
+
+`ask.py` sends the top 5 hybrid chunks to `gpt-4o-mini` with a rule to cite sources and to say "I couldn't find that in BlogChain" otherwise. Both unanswerable eval questions get that refusal. A typical answer costs about 1,700 input tokens, roughly $0.0003.
+
 **Known limits:** the RSS feed returns only the latest 20 posts. The eval questions were written after reading the posts, which flatters keyword search a little.

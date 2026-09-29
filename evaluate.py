@@ -5,7 +5,7 @@ So we score retrieval on its own, before any LLM is involved:
   hit@k : share of questions where a right post appears in the top k chunks
   MRR   : mean of 1/rank of the first right chunk (1.0 = always ranked first)
 
-Run: python3 evaluate.py [-v]   (-v prints every question's result)
+Run: python3 evaluate.py [bm25|vector|hybrid] [-v]   (-v prints every question)
 """
 import json
 import sys
@@ -27,7 +27,9 @@ def first_hit_rank(results, expected):
 
 def main():
     verbose = "-v" in sys.argv
-    retriever = search.load()
+    kind = next((a for a in sys.argv[1:] if a in search.RETRIEVERS), "bm25")
+    retriever = search.load(kind)
+    print(f"retriever: {kind}")
     cases = [c for c in json.loads(EVAL_FILE.read_text()) if c["expect"]]
     by_style = defaultdict(list)
     for c in cases:
