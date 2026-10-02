@@ -49,4 +49,29 @@ Vectors fix paraphrase at the top rank (64% to 79%) but lose some exact-word mat
 
 `ask.py` sends the top 5 hybrid chunks to `gpt-4o-mini` with a rule to cite sources and to say "I couldn't find that in BlogChain" otherwise. Both unanswerable eval questions get that refusal. A typical answer costs about 1,700 input tokens, roughly $0.0003.
 
+## Stage 2: structured outputs with Pydantic
+
+```
+.venv/bin/python -m unittest -v test_answers    # 11 offline tests, no key needed
+.venv/bin/python ask.py "Where did my trading bot finish?"
+.venv/bin/python evaluate_answers.py -v         # answer-level eval, ~$0.01
+```
+
+The model now returns JSON matching `schemas.Answer`: a `found` flag and a list of claims, each with its own source numbers. Two layers check it:
+
+1. **Structured outputs** (`response_format` with `strict: true`) guarantee the shape.
+2. **Pydantic validators** enforce rules a schema can't: source numbers must exist, every claim needs a source, `found` must agree with the claims. A failure sends the error text back to the model, up to 3 attempts.
+
+Chunk citations are merged per post when printed, so three chunks of one post show as one source.
+
+| answer metric | result |
+|---|---|
+| found / not-found correct | 25 / 26 |
+| cites a correct post | 23 / 24 answerable |
+| citation precision | 98% |
+| retries needed | 0 |
+| cost for 26 questions | ~$0.008 |
+
+The one miss is a search miss, not an answer miss: the right post wasn't in the top 5, so the model said "not found" instead of guessing. Strict mode meant the shape never failed live, so the retry loop is proven by the offline tests, which force bad replies through a fake model.
+
 **Known limits:** the RSS feed returns only the latest 20 posts. The eval questions were written after reading the posts, which flatters keyword search a little.

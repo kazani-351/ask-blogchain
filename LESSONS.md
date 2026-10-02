@@ -80,3 +80,67 @@ Answer these without looking. If I can't, I don't own it yet.
 - Citations come at the end of the answer ("[1][4]"), not after each claim.
 - The source list repeats the same post.
 - Stage 2 (Pydantic plus structured outputs) returns the answer as checked data with one citation per claim.
+
+---
+
+## 0002: Stage 2, structured outputs with Pydantic (2026-10-02)
+
+### What I built
+
+The answer is no longer a paragraph. It's data with a fixed shape:
+
+```json
+{"found": true, "claims": [{"text": "My bot finished around 48th of 107.", "sources": [1]}]}
+```
+
+| File | What it does |
+|---|---|
+| `schemas.py` | Defines the answer shape with Pydantic, plus rules for checking it |
+| `ask.py` | Asks for that shape, checks the reply, and retries with the error if it fails |
+| `test_answers.py` | 11 tests that run offline with a fake model, to force failures on purpose |
+| `evaluate_answers.py` | Scores the final answers, not just search |
+
+### What the numbers showed
+
+| Check | Result |
+|---|---|
+| Said "found" or "not found" correctly | 25 of 26 |
+| Cited a correct post | 23 of 24 answerable |
+| Share of cited posts that were correct | 98% |
+| Answers that needed a retry | 0 |
+| Cost for all 26 questions | about $0.008 |
+
+### Ideas worth keeping
+
+1. **Free text can't be checked by code. Data can.** In Stage 1, I had to read each answer to judge it. Now a script scores 26 answers in seconds, because `found` and `sources` are fields, not words in a sentence.
+
+2. **Two layers, two jobs.** The JSON schema, sent to the API, controls the shape: which fields exist and their types. Pydantic, running in my code, controls the meaning: "source 7 doesn't exist, you only got 5 sources." A schema can't know how many sources I sent. My code does.
+
+3. **The schema comes from the code.** I wrote the Pydantic class once, and `model_json_schema()` produced the JSON schema the API needs. One source of truth, so they can't drift apart.
+
+4. **Strict mode needs every field required and no extra fields.** `extra="forbid"` in Pydantic produces `additionalProperties: false`, which strict mode needs.
+
+5. **Retry with the error message, not just "try again."** When validation fails, the exact error text goes back to the model, like "source numbers [9] don't exist; valid numbers are 1 to 5". The model knows what to fix. It also stops after 3 tries, so it can't loop forever.
+
+6. **Test the failure path with a fake model.** With strict mode on, the real model never produced a bad shape, so the retry loop never ran live. I'd never know it worked. The fake model returns scripted bad replies to force it, offline, for free.
+
+7. **An honest "not found" can be a search failure in disguise.** The one wrong answer said "not found" for a question that the archive does answer. Search never surfaced the right post, so the model correctly refused rather than guess. That's the right behavior, and it points at the real fix: better search, not a better prompt.
+
+8. **Format for people, store for machines.** The model cites chunks, like [1][2][3]. Three of those can be the same post. The printing step merges them into one post citation. The stored data keeps the detail, and the reader sees something clean.
+
+### Bug I caught
+
+In Python, the `e` in `except ValidationError as e` is deleted when the `except` block ends. My "gave up after 3 tries" message used `e` after the loop and would have crashed. I saved it to another variable first. The offline test for giving up is what proves the fix.
+
+### Check that I understand it
+
+1. What does the JSON schema guarantee that Pydantic doesn't, and the other way around?
+2. Why can't the schema alone stop the model from citing source 7?
+3. Why send the error text back instead of just asking again?
+4. The retry count was 0. How do I know the retry loop works?
+5. Why was the one "not found" answer actually good behavior?
+6. Why merge chunk citations into post citations only when printing?
+
+### Open for Stage 3
+
+- One question still fails because search misses the right post. Stage 3 (LangGraph) adds a loop: grade the retrieved chunks, and if they're weak, rewrite the question and search again.

@@ -84,6 +84,7 @@ class Hybrid:
 
     RRF ignores the raw scores (BM25 and cosine aren't comparable) and uses rank
     only: each list gives a chunk 1/(60 + rank). Chunks both methods like win.
+    Keeps only the best chunk per post, so one long post can't fill every slot.
     """
 
     def __init__(self, chunks):
@@ -95,7 +96,13 @@ class Hybrid:
             for rank, hit in enumerate(part.search(query, 20), 1):
                 fused[hit["id"]] = fused.get(hit["id"], 0) + 1 / (60 + rank)
                 by_id[hit["id"]] = hit
-        top = sorted(fused, key=fused.get, reverse=True)[:k]
+        top, seen = [], set()
+        for i in sorted(fused, key=fused.get, reverse=True):
+            if by_id[i]["post_id"] not in seen:
+                seen.add(by_id[i]["post_id"])
+                top.append(i)
+            if len(top) == k:
+                break
         return [{**by_id[i], "score": round(fused[i], 4)} for i in top]
 
 
