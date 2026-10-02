@@ -64,6 +64,8 @@ The model now returns JSON matching `schemas.Answer`: a `found` flag and a list 
 
 Chunk citations are merged per post when printed, so three chunks of one post show as one source.
 
+Hybrid search also now keeps only the best chunk per post, so one long post can't fill all 5 slots. That raised hybrid retrieval to hit@1 88%, hit@3 96%, hit@5 96%, MRR 0.91 (from 88% / 88% / 92% / 0.89 in the Stage 1b table). The answer results below use this version.
+
 | answer metric | result |
 |---|---|
 | found / not-found correct | 25 / 26 |
