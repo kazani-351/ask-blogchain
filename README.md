@@ -4,6 +4,51 @@ Ask a question, get an answer from the [BlogChain newsletter](https://paragraph.
 
 Built in stages to learn retrieval-augmented generation (RAG) from first principles, then with production tooling.
 
+## What it does
+
+```
+$ .venv/bin/python agent.py "Where did my trading bot finish?"
+```
+
+1. **Hybrid search** finds the most relevant passages: BM25 keyword ranking and embedding similarity, merged with reciprocal rank fusion.
+2. **A LangGraph agent** grades those passages, rewrites the query if nothing useful came back, and tries again (at most 2 rewrites).
+3. **The answer** is a Pydantic-validated JSON object. Every claim cites the posts it came from, or it says "I couldn't find that in BlogChain."
+4. **Every run is traced in Langfuse**: each step, prompt, token count and cost, nested the way it ran.
+
+## Results
+
+Measured on a 26-question eval set written by hand. 24 questions have a known source post and 2 have no answer in the archive.
+
+| | Result |
+|---|---|
+| Retrieval, hit@1 (hybrid) | 88%, up from 79% for keyword-only |
+| Found / not-found correct | 26 / 26 |
+| Cites a correct post | 24 / 24 |
+| Citation precision | 100% |
+| Cost of a full eval run | about $0.013 |
+
+These numbers come from a small set, so one question is about 4 points. The stage sections below show how each number moved and why.
+
+## Run it
+
+```
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+echo "MESH_API_KEY=..." > .env             # Mesh API (OpenAI-compatible); base URL is in llm.py
+.venv/bin/python embed.py                   # build the vectors (data/embeddings.npy)
+.venv/bin/python agent.py "your question"
+.venv/bin/python -m unittest test_answers test_agent   # 15 offline tests, no key needed
+```
+
+Langfuse tracing is optional. See Stage 4.
+
+## Stack
+
+Python, numpy (vector search), Pydantic, LangGraph, Langfuse, `gpt-4o-mini` and `text-embedding-3-small` via an OpenAI-compatible gateway. There's no vector database: at 76 chunks, exact numpy search is the same thing FAISS would do.
+
+## How it was built
+
+Each stage added one skill and was measured before the next began. [LESSONS.md](LESSONS.md) has a learning record for each stage: what I built, what surprised me, and questions to check that I understood it.
+
 ## Stage 1a: keyword baseline (standard library only)
 
 ```
