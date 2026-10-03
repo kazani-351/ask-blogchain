@@ -6,12 +6,15 @@ the failures that a real model only produces sometimes.
 Run: .venv/bin/python -m unittest -v test_answers
 """
 import json
+import os
 import unittest
 
-from pydantic import ValidationError
+os.environ["LANGFUSE_TRACING_ENABLED"] = "false"  # tests never send traces, even with keys in .env
 
-import ask
-import schemas
+from pydantic import ValidationError  # noqa: E402
+
+import ask  # noqa: E402
+import schemas  # noqa: E402
 
 HITS = [
     {"post_id": "post-a", "title": "Post A", "url": "u/a", "text": "alpha"},

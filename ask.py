@@ -14,6 +14,7 @@ from pydantic import ValidationError
 import llm
 import schemas
 import search
+import tracing
 
 SYSTEM = """You answer questions about the BlogChain newsletter using ONLY the numbered sources provided.
 Split the answer into short claims, one fact each, and list the source numbers that support each claim.
@@ -49,21 +50,28 @@ def structured(messages, model, context=None, chat=llm.chat):
     """Ask for JSON matching `model`, validate it, send errors back, retry.
 
     Returns (parsed, usage, attempts). Every structured call in the project goes through here.
+    In a trace it's one step named after the schema, with each LLM attempt nested inside;
+    a failed validation marks the step WARNING and keeps the error text.
     """
     messages = list(messages)
     usage = {"prompt_tokens": 0, "completion_tokens": 0}
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        raw, u = chat(messages, temperature=0, response_format=schemas.response_format(model))
-        for key in usage:
-            usage[key] += u.get(key, 0)
-        try:
-            return model.model_validate_json(raw, context=context), usage, attempt
-        except ValidationError as e:
-            error = e
-            messages += [
-                {"role": "assistant", "content": raw},
-                {"role": "user", "content": f"That answer failed validation:\n{e}\nReturn corrected JSON."},
-            ]
+    with tracing.client().start_as_current_observation(as_type="chain", name=f"structured:{model.__name__}") as step:
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            raw, u = chat(messages, temperature=0, response_format=schemas.response_format(model))
+            for key in usage:
+                usage[key] += u.get(key, 0)
+            try:
+                parsed = model.model_validate_json(raw, context=context)
+                step.update(output=parsed.model_dump(), metadata={"attempts": attempt})
+                return parsed, usage, attempt
+            except ValidationError as e:
+                error = e
+                step.update(level="WARNING", status_message=f"attempt {attempt} failed validation: {e}")
+                messages += [
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": f"That answer failed validation:\n{e}\nReturn corrected JSON."},
+                ]
+        step.update(level="ERROR", metadata={"attempts": MAX_ATTEMPTS})
     raise SystemExit(f"No valid {model.__name__} after {MAX_ATTEMPTS} attempts. Last error:\n{error}")
 
 

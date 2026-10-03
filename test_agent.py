@@ -5,9 +5,12 @@ Each test scripts what the fake grader says and checks the path the graph took.
 Run: .venv/bin/python -m unittest -v test_agent
 """
 import json
+import os
 import unittest
 
-import agent
+os.environ["LANGFUSE_TRACING_ENABLED"] = "false"  # tests never send traces, even with keys in .env
+
+import agent  # noqa: E402
 
 GOOD = {"post_id": "good", "title": "Good", "url": "u/g", "text": "the answer"}
 BAD = {"post_id": "bad", "title": "Bad", "url": "u/b", "text": "noise"}

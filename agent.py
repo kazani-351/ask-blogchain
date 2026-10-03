@@ -30,6 +30,7 @@ import ask
 import llm
 import schemas
 import search
+import tracing
 
 MAX_REWRITES = 2
 K = 5
@@ -64,8 +65,13 @@ def build(retriever=None, chat=llm.chat):
     """Wire the graph. `retriever` and `chat` are swappable so tests can fake them."""
     retriever = retriever or search.load("hybrid")
 
+    def note(input, output):
+        """Record a readable input/output on the current trace step (the raw state is too big)."""
+        tracing.client().update_current_span(input=input, output=output)
+
     def retrieve(state):
         hits = retriever.search(state["query"], K)
+        note(state["query"], [{"post": h["post_id"], "score": h.get("score")} for h in hits])
         titles = ", ".join(h["post_id"][:28] for h in hits)
         return {"hits": hits, "queries": [state["query"]], "steps": [f"retrieve '{state['query']}' -> {titles}"]}
 
@@ -77,6 +83,7 @@ def build(retriever=None, chat=llm.chat):
         ]
         grades, usage, _ = ask.structured(messages, schemas.Grades, {"n_sources": len(hits)}, chat)
         relevant = [hits[i - 1] for i in grades.relevant]
+        note([h["post_id"] for h in hits], [h["post_id"] for h in relevant])
         return {"relevant": relevant, "tokens": total(usage), "steps": [f"grade -> {len(relevant)}/{len(hits)} relevant {grades.relevant}"]}
 
     def rewrite(state):
@@ -86,11 +93,16 @@ def build(retriever=None, chat=llm.chat):
             {"role": "user", "content": f"Question: {state['question']}\n\nQueries already tried:\n{tried}"},
         ]
         new, usage, _ = ask.structured(messages, schemas.Rewrite, None, chat)
+        note(state["queries"], new.query)
         return {"query": new.query, "rewrites": state["rewrites"] + 1, "tokens": total(usage), "steps": [f"rewrite -> '{new.query}'"]}
 
     def generate(state):
         parsed, usage, _ = ask.generate(state["question"], state["relevant"], chat)
+        note([h["post_id"] for h in state["relevant"]], parsed.model_dump())
         return {"answer": parsed, "tokens": total(usage), "steps": [f"generate -> found={parsed.found}"]}
+
+    def traced(fn, as_type):
+        return tracing.observe(name=fn.__name__, as_type=as_type, capture_input=False, capture_output=False)(fn)
 
     def after_grade(state):
         if state["relevant"]:
@@ -103,10 +115,10 @@ def build(retriever=None, chat=llm.chat):
         return "rewrite"
 
     graph = StateGraph(AgentState)
-    graph.add_node("retrieve", retrieve)
-    graph.add_node("grade", grade)
-    graph.add_node("rewrite", rewrite)
-    graph.add_node("generate", generate)
+    graph.add_node("retrieve", traced(retrieve, "retriever"))
+    graph.add_node("grade", traced(grade, "evaluator"))
+    graph.add_node("rewrite", traced(rewrite, "span"))
+    graph.add_node("generate", traced(generate, "span"))
     graph.add_edge(START, "retrieve")
     graph.add_edge("retrieve", "grade")
     graph.add_conditional_edges("grade", after_grade, ["generate", "rewrite"])
@@ -115,12 +127,18 @@ def build(retriever=None, chat=llm.chat):
     return graph.compile()
 
 
+@tracing.observe(as_type="agent", name="ask-blogchain", capture_input=False, capture_output=False)
 def run(question, app=None):
+    """One question in, final state out. One run = one Langfuse trace."""
     app = app or build()
-    return app.invoke({
+    state = app.invoke({
         "question": question, "query": question, "queries": [], "hits": [], "relevant": [],
         "rewrites": 0, "answer": None, "steps": [], "tokens": 0,
     })
+    text, _ = ask.render(state["answer"], state["relevant"])
+    lf = tracing.client()
+    lf.update_current_span(input=question, output=text, metadata={"rewrites": state["rewrites"], "tokens": state["tokens"]})
+    return {**state, "trace_id": lf.get_current_trace_id(), "trace_url": lf.get_trace_url()}
 
 
 def main():
@@ -133,6 +151,10 @@ def main():
     for i, p in enumerate(posts, 1):
         print(f"  [{i}] {p['title']}  {p['url']}")
     print(f"\n  tokens: {state['tokens']:,}, rewrites: {state['rewrites']}")
+    print(f"  {tracing.status()}")
+    if state["trace_url"]:
+        print(f"  trace: {state['trace_url']}")
+    tracing.client().flush()  # short-lived script: send buffered traces before exiting
 
 
 if __name__ == "__main__":
