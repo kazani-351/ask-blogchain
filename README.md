@@ -191,3 +191,7 @@ Tracing is off unless both keys are set, and tests force it off. Without keys, e
 **Found by tracing:** the Mesh gateway caches identical requests. A fresh call took 1.30s; the same call again took 0.08s. Repeat eval runs mostly hit the cache, so their timings are flattering and their answers are reproducible. Langfuse's cost is computed from tokens, so it may not match what Mesh actually bills for a cached reply.
 
 **Known limits:** the RSS feed returns only the latest 20 posts. The eval questions were written after reading the posts, which flatters keyword search a little.
+
+## License
+
+Code: MIT, see [LICENSE](LICENSE). The newsletter posts in `data/` (`posts.json`, `chunks.json`, and the embeddings built from them) are © kazani, all rights reserved. They are included so the eval can be reproduced.
