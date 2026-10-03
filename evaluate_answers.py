@@ -6,30 +6,50 @@ Structured output makes answers checkable by code, no human reading needed:
   citation prec. : share of cited posts that are correct posts
   retries        : answers that needed a second attempt to pass validation
 
-Costs real money (one LLM call per question, about $0.01 for the whole set).
-Run: .venv/bin/python evaluate_answers.py [-v]
+Costs real money: about $0.01 (pipeline) or $0.02 (agent) for the whole set.
+Run: .venv/bin/python evaluate_answers.py [pipeline|agent] [-v]
 """
 import json
 import sys
 from pathlib import Path
 
+import agent
 import ask
 import search
 
 EVAL_FILE = Path("data/eval.json")
 
 
+def answer_with(mode):
+    """Both modes return (Answer, the hits it cites from, tokens, retried-or-rewrote)."""
+    if mode == "agent":
+        app = agent.build()
+
+        def run(q):
+            s = agent.run(q, app)
+            return s["answer"], s["relevant"], s["tokens"], s["rewrites"] > 0
+    else:
+        retriever = search.load("hybrid")
+
+        def run(q):
+            parsed, hits, usage, attempts = ask.answer(q, retriever)
+            return parsed, hits, usage["prompt_tokens"] + usage["completion_tokens"], attempts > 1
+    return run
+
+
 def main():
     verbose = "-v" in sys.argv
-    retriever = search.load("hybrid")
+    mode = "agent" if "agent" in sys.argv else "pipeline"
+    run = answer_with(mode)
+    print(f"mode: {mode}")
     cases = json.loads(EVAL_FILE.read_text())
     found_ok = cited_ok = retries = tokens = 0
     precisions = []
     answerable = [c for c in cases if c["expect"]]
     for c in cases:
-        parsed, hits, usage, attempts = ask.answer(c["q"], retriever)
-        tokens += usage["prompt_tokens"] + usage["completion_tokens"]
-        retries += attempts > 1
+        parsed, hits, used, looped = run(c["q"])
+        tokens += used
+        retries += looped
         should_find = bool(c["expect"])
         found_ok += parsed.found == should_find
         cited = {hits[s - 1]["post_id"] for cl in parsed.claims for s in cl.sources}
@@ -44,7 +64,7 @@ def main():
     print(f"\nfound accuracy : {found_ok}/{len(cases)}")
     print(f"cited right    : {cited_ok}/{len(answerable)} answerable")
     print(f"citation prec. : {sum(precisions) / max(len(precisions), 1):.0%}")
-    print(f"retries        : {retries}")
+    print(f"{'rewrites' if mode == 'agent' else 'retries'}       : {retries} questions")
     print(f"tokens         : {tokens:,} (~${tokens * 0.15 / 1e6:.4f} at gpt-4o-mini input price)")
 
 

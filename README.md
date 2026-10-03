@@ -76,4 +76,41 @@ Hybrid search also now keeps only the best chunk per post, so one long post can'
 
 The one miss is a search miss, not an answer miss: the right post wasn't in the top 5, so the model said "not found" instead of guessing. Strict mode meant the shape never failed live, so the retry loop is proven by the offline tests, which force bad replies through a fake model.
 
+## Stage 3: agentic RAG with LangGraph
+
+```
+.venv/bin/python -m unittest -v test_agent      # 4 offline routing tests
+.venv/bin/python agent.py "Does giving an AI real-world results matter more than picking a smarter model?"
+.venv/bin/python evaluate_answers.py agent -v   # ~$0.012
+```
+
+`agent.py` turns the straight pipeline into a graph that checks its own work (the corrective RAG pattern). Generated from the compiled graph with `get_graph().draw_mermaid()`:
+
+```mermaid
+graph TD;
+	__start__([start]) --> retrieve;
+	retrieve --> grade;
+	grade -.->|some relevant| generate;
+	grade -.->|none relevant| rewrite;
+	generate -.->|found| __end__([end]);
+	generate -.->|not found| rewrite;
+	rewrite --> retrieve;
+```
+
+- **grade**: one structured call marks which retrieved chunks actually answer the question. Only those reach the answer step.
+- **rewrite**: if nothing relevant was found, or the answer step says "not found", the model writes a new query in different words. At most 2 rewrites.
+- **generate**: the Stage 2 answer step, unchanged. With no relevant chunks it returns "not found" without an LLM call.
+
+All three structured calls share one validate-and-retry helper (`ask.structured`).
+
+| | Stage 2 pipeline | Stage 3 agent |
+|---|---|---|
+| found / not-found correct | 25 / 26 | **26 / 26** |
+| cites a correct post | 23 / 24 | **24 / 24** |
+| citation precision | 98% | **100%** |
+| questions that looped | 0 retries | 4 rewrites (2 unanswerable, by design) |
+| tokens for 26 questions | 55,697 | 81,200 (+46%) |
+
+The rescued question took both loops: the grader wrongly kept one off-topic chunk, the answer step said "not found", and that sent it to rewrite, where the new query found the right post. Unanswerable questions now try 3 queries before giving up, which is where most of the extra tokens go.
+
 **Known limits:** the RSS feed returns only the latest 20 posts. The eval questions were written after reading the posts, which flatters keyword search a little.

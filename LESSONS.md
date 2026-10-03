@@ -144,3 +144,82 @@ In Python, the `e` in `except ValidationError as e` is deleted when the `except`
 ### Open for Stage 3
 
 - One question still fails because search misses the right post. Stage 3 (LangGraph) adds a loop: grade the retrieved chunks, and if they're weak, rewrite the question and search again.
+
+---
+
+## 0003: Stage 3, agentic RAG with LangGraph (2026-10-03)
+
+### What I built
+
+Stage 2 was a straight line: search once, answer once. Stage 3 is a loop that checks its own work. This is called corrective RAG.
+
+```
+retrieve → grade ──some relevant──→ generate ──found──→ done
+   ↑         │ none relevant           │ not found
+   └─ rewrite ←────────────────────────┘   (at most 2 rewrites)
+```
+
+| File | What it does |
+|---|---|
+| `agent.py` | The graph: four steps (retrieve, grade, rewrite, generate) and the rules for which runs next |
+| `ask.py` | Now has one shared `structured()` helper. The grader, the rewriter and the answer step all use it |
+| `schemas.py` | Two new shapes: `Grades` (which sources are relevant) and `Rewrite` (a new query) |
+| `test_agent.py` | 4 offline tests that check which path the graph takes |
+
+### What the numbers showed
+
+| | Stage 2 | Stage 3 |
+|---|---|---|
+| Found or not found, correct | 25 of 26 | **26 of 26** |
+| Cited a correct post | 23 of 24 | **24 of 24** |
+| Share of citations that were correct | 98% | **100%** |
+| Tokens for 26 questions | 55,697 | 81,200 (46% more) |
+
+### What LangGraph actually is
+
+A way to write a program as a flowchart where an AI decides some of the arrows. It has four parts:
+
+- **State**: one shared dictionary. Every step reads it and returns only the keys it changed.
+- **Node**: a plain Python function. Mine are `retrieve`, `grade`, `rewrite`, `generate`.
+- **Edge**: what runs next. A conditional edge is a small function that looks at the state and picks the next node. Mine are `after_grade` and `after_generate`.
+- **Reducer**: how a node's output merges into the state. The default replaces the old value. `operator.add` appends instead. I used it for the list of queries tried, the step log, and the token count.
+
+### Ideas worth keeping
+
+1. **Pipeline vs agent.** A pipeline runs the same steps every time. An agent decides what to do next based on what just happened. Here the decision is "was this search good enough?" That one decision is the whole difference.
+
+2. **The loop needs a judge.** Without the grade step, the program can't know search failed. Grading is a small, cheap LLM call that answers one question: which of these chunks actually answer it?
+
+3. **Every loop needs an exit.** `MAX_REWRITES = 2` means at most 3 searches. Without a limit, an unanswerable question would loop forever and burn money. Cost limits are a design decision, not an afterthought.
+
+4. **Two checks catch more than one.** The grader made a mistake on the rescued question: it kept an off-topic chunk. The answer step read it and said "not found", which sent it back to rewrite. If only the grader could trigger a rewrite, that question would still fail.
+
+5. **Rewriting works because search is literal.** "Real-world results vs smarter model" missed. The rewritten "real-world data for AI performance versus model intelligence" found it. The model guessed words closer to the ones the post actually uses.
+
+6. **Better answers cost more.** 46% more tokens, and more time per question. Most of it goes to unanswerable questions, which now try 3 queries before giving up. Whether that's worth it depends on the product. For a demo, yes. At a million questions a day, maybe only rewrite once.
+
+7. **Skip calls you don't need.** If no chunk is relevant after the last rewrite, the answer is "not found" with no LLM call at all. Cheap wins like this add up.
+
+8. **Test the paths, not just the pieces.** The routing tests use a fake search that only finds the answer when the query contains a magic word. That lets me force each path: found on the first try, rescued by a rewrite, gave up. A real model would take whichever path it felt like.
+
+9. **One helper for every structured call.** Grading, rewriting, and answering all need "ask for JSON, validate, send the error back, retry." I moved that into one function, `ask.structured()`, instead of copying it three times.
+
+10. **Draw the graph from the code.** `get_graph().draw_mermaid()` produces the diagram in the README from the real compiled graph. A hand-drawn diagram can drift from the code. This one can't.
+
+### Install check
+
+LangGraph pulled in about 40 packages. I checked each one on PyPI before installing. Three unfamiliar names turned up (`httpx2`, `httpcore2`, `httpx2-jsfetch`). The first two come from the real `pydantic` GitHub organization. The third only installs when Python runs inside a browser, so it never landed here. Checking unfamiliar names before installing guards against fake look-alike packages.
+
+### Check that I understand it
+
+1. What makes this an agent and not a pipeline?
+2. What are State, Node, Edge, and Reducer, in one sentence each?
+3. Why does `queries` use `operator.add` while `query` doesn't?
+4. Why does the graph need `MAX_REWRITES`?
+5. The grader made a mistake on the rescued question. What caught it?
+6. Where did the extra 46% of tokens go?
+7. How do the routing tests force the "rescued by rewrite" path without a real model?
+
+### Open for Stage 4
+
+- I can see each run's steps in a printed log, but not the timing, cost per step, or the exact prompt each step sent. Stage 4 (Langfuse) records all of that for every run.

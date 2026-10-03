@@ -51,9 +51,31 @@ class Answer(BaseModel):
         return self
 
 
-def response_format():
-    """OpenAI structured-outputs wrapper around the Pydantic-generated schema."""
+class Grades(BaseModel):
+    """The grader's verdict on retrieved chunks (Stage 3)."""
+    model_config = ConfigDict(extra="forbid")
+
+    relevant: list[int] = Field(description="Numbers of the sources that contain information answering the question. Empty if none do.")
+
+    @field_validator("relevant")
+    @classmethod
+    def real_sources(cls, v, info: ValidationInfo):
+        n = (info.context or {}).get("n_sources")
+        if n is not None and any(not 1 <= s <= n for s in v):
+            raise ValueError(f"source numbers must be 1 to {n}")
+        return sorted(set(v))
+
+
+class Rewrite(BaseModel):
+    """A new search query when the last one found nothing useful (Stage 3)."""
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(description="A new search query using different words from the earlier ones.")
+
+
+def response_format(model=Answer):
+    """OpenAI structured-outputs wrapper around a Pydantic-generated schema."""
     return {
         "type": "json_schema",
-        "json_schema": {"name": "answer", "strict": True, "schema": Answer.model_json_schema()},
+        "json_schema": {"name": model.__name__.lower(), "strict": True, "schema": model.model_json_schema()},
     }

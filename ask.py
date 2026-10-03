@@ -26,26 +26,45 @@ MAX_ATTEMPTS = 3
 def answer(question, retriever, k=5, chat=llm.chat):
     """Returns (Answer, hits, usage, attempts). `chat` is swappable so tests can fake the model."""
     hits = retriever.search(question, k)
-    sources = "\n\n".join(f"[{i}] {h['title']}\n{h['text']}" for i, h in enumerate(hits, 1))
+    parsed, usage, attempts = generate(question, hits, chat)
+    return parsed, hits, usage, attempts
+
+
+def format_sources(hits):
+    return "\n\n".join(f"[{i}] {h['title']}\n{h['text']}" for i, h in enumerate(hits, 1))
+
+
+def generate(question, hits, chat=llm.chat):
+    """Structured answer from the given chunks. Returns (Answer, usage, attempts)."""
+    if not hits:  # nothing to read: no reason to pay for a call
+        return schemas.Answer(found=False, claims=[]), {"prompt_tokens": 0, "completion_tokens": 0}, 0
     messages = [
         {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": f"Sources:\n\n{sources}\n\nQuestion: {question}"},
+        {"role": "user", "content": f"Sources:\n\n{format_sources(hits)}\n\nQuestion: {question}"},
     ]
+    return structured(messages, schemas.Answer, {"n_sources": len(hits)}, chat)
+
+
+def structured(messages, model, context=None, chat=llm.chat):
+    """Ask for JSON matching `model`, validate it, send errors back, retry.
+
+    Returns (parsed, usage, attempts). Every structured call in the project goes through here.
+    """
+    messages = list(messages)
     usage = {"prompt_tokens": 0, "completion_tokens": 0}
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        raw, u = chat(messages, temperature=0, response_format=schemas.response_format())
+        raw, u = chat(messages, temperature=0, response_format=schemas.response_format(model))
         for key in usage:
             usage[key] += u.get(key, 0)
         try:
-            parsed = schemas.Answer.model_validate_json(raw, context={"n_sources": len(hits)})
-            return parsed, hits, usage, attempt
+            return model.model_validate_json(raw, context=context), usage, attempt
         except ValidationError as e:
             error = e
             messages += [
                 {"role": "assistant", "content": raw},
                 {"role": "user", "content": f"That answer failed validation:\n{e}\nReturn corrected JSON."},
             ]
-    raise SystemExit(f"No valid answer after {MAX_ATTEMPTS} attempts. Last error:\n{error}")
+    raise SystemExit(f"No valid {model.__name__} after {MAX_ATTEMPTS} attempts. Last error:\n{error}")
 
 
 def render(parsed, hits):
