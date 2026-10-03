@@ -113,4 +113,36 @@ All three structured calls share one validate-and-retry helper (`ask.structured`
 
 The rescued question took both loops: the grader wrongly kept one off-topic chunk, the answer step said "not found", and that sent it to rewrite, where the new query found the right post. Unanswerable questions now try 3 queries before giving up, which is where most of the extra tokens go.
 
+## Stage 4: tracing with Langfuse
+
+```
+# .env: LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_BASE_URL
+.venv/bin/python agent.py "..."                  # prints a trace link
+.venv/bin/python show_trace.py <trace_id>        # the same trace as a tree in the terminal
+.venv/bin/python evaluate_answers.py agent       # 26 traces in one session, each scored
+```
+
+Every run is one Langfuse trace. `@observe` marks each layer, and LangGraph passes the trace context into its nodes, so the steps nest the way they ran:
+
+```
+AGENT      ask-blogchain         one question
+  RETRIEVER  retrieve
+    EMBEDDING  embed             text-embedding-3-small, 15 tokens
+  EVALUATOR  grade
+    CHAIN      structured:Grades
+      GENERATION chat            gpt-4o-mini, 2,044 in / 6 out, $0.000310
+  SPAN       generate            found=False
+  SPAN       rewrite             new query
+  RETRIEVER  retrieve            (second search)
+  ...
+```
+
+Each generation records the exact prompt, reply, model, token usage, and a cost Langfuse calculates from its price table. A validation retry marks its step WARNING with the error text. An eval run tags all its traces with one session id and attaches a BOOLEAN `correct` score to each, so the dashboard can filter straight to failures.
+
+Tracing is off unless both keys are set, and tests force it off. Without keys, everything runs the same and prints one status line.
+
+**Verified:** one traced question produced 20 nested steps and cost $0.000928. One eval session produced 26 traces, 284 steps, 26 scores, and cost $0.0132 (Langfuse's figure, which prices input and output tokens separately).
+
+**Found by tracing:** the Mesh gateway caches identical requests. A fresh call took 1.30s; the same call again took 0.08s. Repeat eval runs mostly hit the cache, so their timings are flattering and their answers are reproducible. Langfuse's cost is computed from tokens, so it may not match what Mesh actually bills for a cached reply.
+
 **Known limits:** the RSS feed returns only the latest 20 posts. The eval questions were written after reading the posts, which flatters keyword search a little.

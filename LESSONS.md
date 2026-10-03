@@ -223,3 +223,76 @@ LangGraph pulled in about 40 packages. I checked each one on PyPI before install
 ### Open for Stage 4
 
 - I can see each run's steps in a printed log, but not the timing, cost per step, or the exact prompt each step sent. Stage 4 (Langfuse) records all of that for every run.
+
+---
+
+## 0004: Stage 4, tracing with Langfuse (2026-10-03)
+
+### What I built
+
+Every question now leaves a full record in Langfuse: each step, each LLM call with its exact prompt and reply, tokens, cost, and time, nested the way they ran.
+
+| File | What it does |
+|---|---|
+| `tracing.py` | One switch: tracing is on only when both keys are in `.env`. Otherwise it's off, quietly |
+| `env.py` | Loads `.env` once, before anything reads it |
+| `llm.py` | Each chat call is a **generation** and each embedding call an **embedding**, with model and tokens |
+| `ask.py` | Each validate-and-retry call is one step, marked WARNING if it had to retry |
+| `agent.py` | The whole question is an **agent** trace. Each graph step has a type: retriever, evaluator, span |
+| `evaluate_answers.py` | An eval run is one **session**, and each trace gets a `correct` score |
+| `show_trace.py` | Prints any trace as a tree in the terminal |
+
+### What the numbers showed
+
+| | Result |
+|---|---|
+| Steps in one traced question | 20, all nested under one trace |
+| Cost of that question (Langfuse's figure) | $0.000928 |
+| Eval session | 26 traces, 284 steps, 26 scores |
+| Cost of the whole eval | $0.0132 |
+
+### Ideas worth keeping
+
+1. **A trace is a tree of everything one request did.** Logs tell you what happened. A trace shows what happened inside what, how long each piece took, and what it cost.
+
+2. **Generation vs span.** A generation is an LLM call: it has a model, a prompt, a reply, and tokens, so it can have a cost. A span is any other step. The type tells Langfuse what to calculate.
+
+3. **Instrument the layers, not every line.** I marked five places: the LLM client, the shared retry helper, each graph step, the whole run, and the eval. Everything else nests inside automatically.
+
+4. **Trace context travels with the code.** I didn't pass a trace ID anywhere. OpenTelemetry keeps the "current trace" in the background, and LangGraph carries it into each step. I wasn't sure it would, so I checked by reading the trace back.
+
+5. **Tracing must never break the app.** Without keys, tracing switches off and the app runs the same. Traces are sent in the background in batches. A short script must call `flush()` before it exits, or the last traces are lost.
+
+6. **Tests must never send traces.** The test files turn tracing off before importing anything, even when real keys are in `.env`.
+
+7. **Scores turn traces into an eval dashboard.** Each eval trace carries `correct = true/false`. In Langfuse I can filter to the failures and open the exact prompt that went wrong.
+
+8. **Sessions group related traces.** One eval run is one session, so I can compare runs side by side.
+
+9. **Verify what arrived, not what you sent.** I read the trace back through the API to check the nesting, tokens, and cost. A trace link alone proves nothing.
+
+10. **Tracing finds things you weren't looking for.** Some LLM calls took 0.08 seconds, which is too fast to be real. I tested it: a fresh call took 1.30s, and the same call repeated took 0.08s. The Mesh gateway caches identical requests. I'd never have seen that from the printed log.
+
+### Surprises
+
+- **Langfuse retired its old read API for new accounts.** `GET /api/public/traces/<id>` returned HTTP 410 for accounts created after 2026-09-16. The error message named the replacement (`/api/public/v2/observations`), so the fix was quick. Reading error messages fully pays off.
+- **Langfuse's cost was higher than mine.** I estimated with the input price only. Langfuse prices input and output tokens separately, which is more accurate.
+- **Caching cuts both ways.** Repeat eval runs are reproducible, but their speeds are flattering, and I don't know if Mesh charges full price for cached replies.
+
+### Install check
+
+Langfuse added 14 packages, all pure Python. Two were new on PyPI this summer (`opentelemetry-exporter-otlp-common`, `opentelemetry-exporter-http-transport`). Both come from the official OpenTelemetry repository, and the established OTLP exporter depends on them at exact versions. It's a split of an existing package, not a look-alike.
+
+### Check that I understand it
+
+1. What's the difference between a log and a trace?
+2. Why is `chat` a generation but `grade` a span?
+3. I never passed a trace ID between functions. How do the steps end up nested?
+4. Why does a short script need `flush()`?
+5. How do the tests make sure they never send traces?
+6. What does the `correct` score let me do in Langfuse that the printed eval can't?
+7. How did tracing reveal the gateway cache?
+
+### Open for Stage 5
+
+- Push the repo to GitHub, write the BlogChain post, record a short demo, and add the project to my resume.
