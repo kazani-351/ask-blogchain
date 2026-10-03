@@ -4,6 +4,8 @@ Ask a question, get an answer from the [BlogChain newsletter](https://paragraph.
 
 Built in stages to learn retrieval-augmented generation (RAG) from first principles, then with production tooling.
 
+Write-up: [My RAG bot scored 26/26. A trace showed me what the score was hiding.](https://paragraph.com/@kazani/my-rag-bot-scored-2626-a-trace-showed-me-what-the-score-was-hiding)
+
 ## What it does
 
 ```
