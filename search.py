@@ -8,13 +8,14 @@ BM25 is the classic search-engine ranking formula. A chunk scores high when it:
 Its blind spot is the reason embeddings exist: it only matches exact words.
 "wearable tracker" will never match a chunk that says "ring".
 
-Run: python3 search.py [bm25|vector|hybrid] "your question"
+Run: python3 search.py [bm25|vector|hybrid|truncated|binary|hybrid-binary] "your question"
 """
 import json
 import math
 import re
 import sys
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 
 CHUNKS_FILE = Path("data/chunks.json")
@@ -69,14 +70,58 @@ class Vector:
         if ids != [c["id"] for c in chunks]:
             raise SystemExit("Embeddings missing or stale for these chunks. Run: .venv/bin/python embed.py")
         self.np, self.chunks = np, chunks
-        self.vecs = np.load("data/embeddings.npy")
+        self.vecs = self.encode(np.load("data/embeddings.npy"))
+
+    def encode(self, vecs):
+        return vecs
+
+    def similarity(self, q):
+        return self.vecs @ q
 
     def search(self, query, k=5):
-        import llm
-        q = self.np.array(llm.embed([query])[0], dtype=self.np.float32)
-        sims = self.vecs @ (q / self.np.linalg.norm(q))
+        q = self.encode(self.np.array([embed_query(query)], dtype=self.np.float32))[0]
+        sims = self.similarity(q)
         top = self.np.argsort(-sims)[:k]
         return [{**self.chunks[i], "score": round(float(sims[i]), 3)} for i in top]
+
+
+class Truncated(Vector):
+    """Stage 6: keep only the first 48 of 1,536 dimensions, at full precision.
+
+    text-embedding-3-small is trained so a leading slice still works on its own.
+    48 floats x 4 bytes = 192 bytes per vector, the same budget as Binary.
+    """
+    DIMS = 48
+
+    def encode(self, vecs):
+        cut = vecs[:, :self.DIMS]
+        return cut / self.np.linalg.norm(cut, axis=1, keepdims=True)
+
+
+class Binary(Vector):
+    """Stage 6: keep all 1,536 dimensions, but only 1 bit each (the sign).
+
+    1,536 bits = 192 bytes per vector, 32x smaller than float32. Cosine needs the
+    magnitudes we threw away, so we compare by Hamming distance: XOR the bits and
+    count the 1s (positions where the two vectors disagree). The score is the
+    share of bits that agree, so 1.0 = identical and ~0.5 = unrelated.
+    """
+
+    def encode(self, vecs):
+        return self.np.packbits(vecs >= 0, axis=1)
+
+    def similarity(self, q):
+        bits = self.vecs.shape[1] * 8
+        return 1 - self.np.bitwise_count(self.vecs ^ q).sum(axis=1) / bits
+
+
+@lru_cache(maxsize=None)
+def embed_query(query):
+    """One embedding call per question, shared by every vector variant."""
+    import llm
+    q = llm.embed([query])[0]
+    norm = math.sqrt(sum(x * x for x in q))
+    return tuple(x / norm for x in q)
 
 
 class Hybrid:
@@ -87,8 +132,8 @@ class Hybrid:
     Keeps only the best chunk per post, so one long post can't fill every slot.
     """
 
-    def __init__(self, chunks):
-        self.parts = [BM25(chunks), Vector(chunks)]
+    def __init__(self, chunks, vector=Vector):
+        self.parts = [BM25(chunks), vector(chunks)]
 
     def search(self, query, k=5):
         fused, by_id = {}, {}
@@ -106,7 +151,11 @@ class Hybrid:
         return [{**by_id[i], "score": round(fused[i], 4)} for i in top]
 
 
-RETRIEVERS = {"bm25": BM25, "vector": Vector, "hybrid": Hybrid}
+RETRIEVERS = {
+    "bm25": BM25, "vector": Vector, "hybrid": Hybrid,
+    "truncated": Truncated, "binary": Binary,
+    "hybrid-binary": lambda chunks: Hybrid(chunks, Binary),
+}
 
 
 def load(kind="bm25"):

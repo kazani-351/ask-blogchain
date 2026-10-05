@@ -194,6 +194,24 @@ Tracing is off unless both keys are set, and tests force it off. Without keys, e
 
 **Known limits:** the RSS feed returns only the latest 20 posts. The eval questions were written after reading the posts, which flatters keyword search a little.
 
+## Stage 6: dimensions vs precision
+
+```
+.venv/bin/python evaluate.py vector binary truncated hybrid hybrid-binary
+```
+
+Two ways to shrink each vector from 6,144 bytes to 192: keep all 1,536 dimensions at 1 bit each (`binary`, compared by Hamming distance), or keep the first 48 dimensions as floats (`truncated`).
+
+| Retriever | Bytes/vector | hit@1 | hit@5 | MRR |
+|---|---|---|---|---|
+| vector (float32) | 6,144 | 83% | 92% | 0.86 |
+| binary | 192 | 75% | 92% | 0.80 |
+| truncated | 192 | 62% | 83% | 0.68 |
+| hybrid | 6,144 | 88% | 96% | 0.91 |
+| hybrid-binary | 192 | 83% | 96% | 0.89 |
+
+At the same budget, keeping every dimension beats keeping precision. Binary loses some top-1 ranking but none at hit@5, and hybrid search hides most of the loss. Binary also squeezes all scores into a narrow band (unrelated chunks score about 0.55). That would break a score cutoff for "not found", but this app never used one: even with floats, an unanswerable question outscored the weakest right answer, which is why the Stage 3 agent asks an LLM grader instead. See [LESSONS.md](LESSONS.md) 0005.
+
 ## License
 
 Code: MIT, see [LICENSE](LICENSE). The newsletter posts in `data/` (`posts.json`, `chunks.json`, and the embeddings built from them) are © kazani, all rights reserved. They are included so the eval can be reproduced.

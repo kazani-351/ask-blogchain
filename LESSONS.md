@@ -296,3 +296,68 @@ Langfuse added 14 packages, all pure Python. Two were new on PyPI this summer (`
 ### Open for Stage 5
 
 - Push the repo to GitHub, write the BlogChain post, record a short demo, and add the project to my resume.
+
+## 0005: Stage 6, dimensions vs precision (2026-10-05)
+
+Prompted by JetBrains' write-up on Air Context, which claims that at a fixed storage budget, keeping every dimension at 1 bit beats keeping a few dimensions at full precision. I tested that claim on this archive.
+
+### What I built
+
+| File | What it does |
+|---|---|
+| `search.py` | `Binary`: all 1,536 dimensions, 1 bit each (the sign), compared by Hamming distance. `Truncated`: the first 48 dimensions as floats. Both are 192 bytes per vector, against 6,144 for the original. `hybrid-binary` runs hybrid search with `Binary` |
+| `search.py` | `embed_query` caches each question's embedding, so every variant in one run uses the same vector |
+| `evaluate.py` | Takes several retrievers in one run, and prints a **score band** for vector variants: where unrelated, right, and unanswerable scores sit |
+
+### What the numbers showed
+
+| Retriever | Bytes/vector | hit@1 | hit@3 | hit@5 | MRR |
+|---|---|---|---|---|---|
+| vector (float32) | 6,144 | 83% | 88% | 92% | 0.86 |
+| binary (1,536 x 1 bit) | 192 | 75% | 83% | 92% | 0.80 |
+| truncated (48 x float32) | 192 | 62% | 71% | 83% | 0.68 |
+| hybrid (float) | 6,144 | 88% | 96% | 96% | 0.91 |
+| hybrid-binary | 192 | 83% | 96% | 96% | 0.89 |
+
+| Score band | Floor (median) | Right answers, top-1 | Unanswerable, top-1 |
+|---|---|---|---|
+| vector | 0.199 | 0.305 to 0.631 | 0.241, 0.352 |
+| binary | 0.554 | 0.594 to 0.708 | 0.582, 0.629 |
+| truncated | 0.161 | 0.403 to 0.705 | 0.405, 0.557 |
+
+One question is about 4 points, so gaps of 1 or 2 questions are noise.
+
+### Ideas worth keeping
+
+1. **At the same budget, dimensions beat precision.** Binary and truncated use the same 192 bytes. Binary was better on every metric: 3 more questions at hit@1, 2 more at hit@5. That's small, but every metric points the same way.
+
+2. **Why it works.** Think of each dimension as a question the model asks about the text. Binary keeps a rough yes/no for all 1,536 questions. Truncated keeps exact answers to 48 of them and throws away the rest. No amount of precision brings the discarded questions back.
+
+3. **Binary costs ranking at the top, not the right neighborhood.** It lost 2 questions at hit@1 and none at hit@5. My agent reads the top 5, so for it, binary is nearly free.
+
+4. **Hybrid search hides most of the loss.** RRF uses ranks, not scores, and BM25 still catches the keyword questions. Hybrid-binary matches hybrid at hit@3 and hit@5 and loses one question at hit@1.
+
+5. **Binary squeezes every score into a thin band.** The unrelated floor moved to 0.55, which is about half the bits agreeing by chance, as expected. The weakest right answer sits only 0.040 above the floor, against 0.106 for floats.
+
+6. **A score cutoff for "not found" never worked here, even with floats.** In every variant, an unanswerable question's top score (0.352 in float) beat the weakest right answer (0.305). No cutoff separates them. The LLM grader in Stage 3 was the right call, and binarizing can't break it, because the "not found" decision never looked at scores.
+
+7. **Choosing the precision chose the metric.** Once each component is a sign bit, cosine has nothing to work with. Hamming distance is XOR, then count the 1s, using `np.bitwise_count` in numpy 2.
+
+### Surprises
+
+- I expected binary to break the "not found" answers. It couldn't, because nothing in the app uses a score threshold. Reading the code before predicting would have caught that.
+- Truncated has the widest band between floor and answers, but the worst ranking. A wide band doesn't help if the wrong chunks are inside it.
+
+### Install check
+
+None. numpy was already installed.
+
+### Check that I understand it
+
+1. Binary and truncated are both 192 bytes. Why does binary rank better?
+2. Why does binary need Hamming distance instead of cosine?
+3. Why is binary's unrelated floor about 0.5 instead of about 0?
+4. Binary lost 2 questions at hit@1 and none at hit@5. Why does that matter less for my agent than for a search box?
+5. Why did hybrid-binary lose almost nothing?
+6. Why would a "not found" score cutoff fail on this archive, even with float vectors?
+7. When would you keep float vectors despite the 32x cost?
